@@ -29,10 +29,10 @@ Pi's built-in editor has no keyboard selection. This extension installs a `Custo
 
 ## Install
 
-Clone (SSH):
+Clone:
 
 ```bash
-git clone git@github.com:liodali/pi-selection-editor.git
+git clone https://github.com/liodali/pi-selection-editor.git
 ```
 
 Register the folder in `~/.pi/agent/settings.json`:
