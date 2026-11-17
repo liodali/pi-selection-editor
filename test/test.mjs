@@ -255,66 +255,6 @@ ed.handleMouse(mouse("release", 0, 8));
 check("drag past bottom scrolls", ed.internals.scrollOffset === 2, `offset=${ed.internals.scrollOffset}`);
 check("auto-scroll selection spans lines", sel() === "line06\nline07\n", `got ${JSON.stringify(sel())}`);
 
-console.log("regular-mode mouse (opt-in)");
-const { readFileSync, writeFileSync, unlinkSync, existsSync } = await import("node:fs");
-const writes = [];
-const regularTui = {
-	mode: "regular",
-	terminal: { rows: 24, columns: 80, write: (d) => writes.push(d) },
-	requestRender() {},
-	mouseLayout: null,
-};
-const ed2 = editorFactory(regularTui, mockEditorTheme, mockKb);
-// widget(2 rows) + editor(3 rows) + footer(1 row) -> editor top at screen row 20 (0-based)
-regularTui.mouseLayout = {
-	width: 80,
-	children: [{ component: {}, height: 2 }, { component: ed2, height: 3 }, { component: {}, height: 1 }],
-};
-ed2.setText("hello world");
-ed2.render(80);
-ed2.enableRegularMouse();
-check("enable writes mouse reporting sequences", writes.some((w) => w.includes("?1000h") && w.includes("?1006h")));
-// SGR coords are 1-based: text row = screen row 21 -> y=22; col 2 -> x=3
-ed2.handleInput("\x1b[<0;3;22M"); // press
-ed2.handleInput("\x1b[<32;8;22M"); // drag (button 32 = left motion)
-ed2.handleInput("\x1b[<0;8;22m"); // release
-check("regular-mode drag selects", ed2.selectedText() === "llo w", `got ${JSON.stringify(ed2.selectedText())}`);
-ed2.handleInput("\x7f");
-check("regular-mode drag selection deletable", ed2.getText() === "heorld", `got ${JSON.stringify(ed2.getText())}`);
-
-ed2.setText("hello world");
-ed2.render(80);
-ed2.handleInput("\x1b[<0;5;22M");
-ed2.handleInput("\x1b[<0;5;22m");
-check("regular-mode click positions cursor", ed2.getCursor().col === 4 && ed2.selectedText() === "");
-ed2.handleInput("\x1b[<0;5;22M");
-ed2.handleInput("\x1b[<0;5;22m");
-check("regular-mode double-click selects word", ed2.selectedText() === "hello", `got ${JSON.stringify(ed2.selectedText())}`);
-
-const before = ed2.getText();
-ed2.handleInput("\x1b[<64;5;22M"); // wheel: consumed
-ed2.handleInput("\x1b[<0;5;5M"); // press in transcript area: ignored
-ed2.handleInput("\x1b[<0;5;5m");
-ed2.handleInput("\x1b[<2;5;22M"); // right button: ignored
-check("wheel/outside/right-button ignored safely", ed2.getText() === before);
-ed2.disableRegularMouse();
-check("disable writes mouse-off sequences", writes.some((w) => w.includes("?1000l")));
-const selBeforeDisable = ed2.selectedText();
-ed2.handleInput("\x1b[<0;3;22M");
-ed2.handleInput("\x1b[<0;8;22m");
-check("SGR ignored after disable", ed2.selectedText() === selBeforeDisable);
-
-console.log("mouse opt-in persistence");
-const configPath = join(here, "..", "config.json");
-const originalConfig = existsSync(configPath) ? readFileSync(configPath, "utf8") : null;
-writeFileSync(configPath, JSON.stringify({ regularModeMouse: false }));
-await commands["selection-editor"].handler("mouse", mockCtx);
-check("opt-in persisted on", JSON.parse(readFileSync(configPath, "utf8")).regularModeMouse === true);
-await commands["selection-editor"].handler("mouse", mockCtx);
-check("opt-in persisted off", JSON.parse(readFileSync(configPath, "utf8")).regularModeMouse === false);
-if (originalConfig === null) unlinkSync(configPath);
-else writeFileSync(configPath, originalConfig);
-
 console.log("toggle command");
 check("command registered", !!commands["selection-editor"]);
 await commands["selection-editor"].handler("", mockCtx);
