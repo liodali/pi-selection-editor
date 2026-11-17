@@ -197,6 +197,64 @@ for (let i = 0; i < 5; i++) type(SHIFT_LEFT);
 type("\x1b[13;2~"); // shift+enter legacy
 check("newline replaces selection", text() === "hello \n", `got ${JSON.stringify(text())}`);
 
+console.log("mouse drag selection");
+const mouse = (type, x, y, extra = {}) => ({
+	type,
+	button: "left",
+	x,
+	y,
+	screenX: x,
+	screenY: y,
+	width: 40,
+	height: 10,
+	shift: false,
+	alt: false,
+	ctrl: false,
+	...extra,
+});
+ed.setText("hello world");
+ed.render(40);
+ed.handleMouse(mouse("press", 2, 1));
+ed.handleMouse(mouse("drag", 7, 1));
+ed.handleMouse(mouse("release", 7, 1));
+check("drag selects range", sel() === "llo w", `got ${JSON.stringify(sel())}`);
+check("drag render highlights", ed.render(40)[1].includes(BG));
+type("\x7f");
+check("backspace deletes drag selection", text() === "heorld", `got ${JSON.stringify(text())}`);
+
+ed.setText("hello world");
+ed.render(40);
+ed.handleMouse(mouse("press", 4, 1));
+ed.handleMouse(mouse("release", 4, 1));
+check("click positions cursor exactly", ed.getCursor().col === 4 && sel() === "", `cursor=${JSON.stringify(ed.getCursor())}`);
+type("X");
+check("typing at clicked position", text() === "hellXo world", `got ${JSON.stringify(text())}`);
+
+ed.setText("aaa\nbbb\nccc");
+ed.render(40);
+ed.handleMouse(mouse("press", 1, 1));
+ed.handleMouse(mouse("drag", 2, 3));
+ed.handleMouse(mouse("release", 2, 3));
+check("drag across lines", sel() === "aa\nbbb\ncc", `got ${JSON.stringify(sel())}`);
+ed.handleMouse(mouse("press", 2, 3));
+ed.handleMouse(mouse("drag", 1, 1));
+ed.handleMouse(mouse("release", 1, 1));
+check("upward drag normalizes range", sel() === "aa\nbbb\ncc", `got ${JSON.stringify(sel())}`);
+type("Z");
+check("typing replaces drag selection", text() === "aZc", `got ${JSON.stringify(text())}`);
+
+console.log("drag auto-scroll");
+ed.setText(Array.from({ length: 20 }, (_, i) => `line${String(i).padStart(2, "0")}`).join("\n"));
+ed.internals.state.cursorLine = 0;
+ed.internals.setCursorCol(0);
+ed.render(40); // 24 rows -> max 7 visible, viewport at top
+ed.handleMouse(mouse("press", 0, 7));
+ed.handleMouse(mouse("drag", 0, 8));
+ed.handleMouse(mouse("drag", 0, 8));
+ed.handleMouse(mouse("release", 0, 8));
+check("drag past bottom scrolls", ed.internals.scrollOffset === 2, `offset=${ed.internals.scrollOffset}`);
+check("auto-scroll selection spans lines", sel() === "line06\nline07\n", `got ${JSON.stringify(sel())}`);
+
 console.log("toggle command");
 check("command registered", !!commands["selection-editor"]);
 await commands["selection-editor"].handler("", mockCtx);

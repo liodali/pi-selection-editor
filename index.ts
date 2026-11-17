@@ -14,9 +14,14 @@
  *   typing / paste / Ctrl+Y   replace the selection
  *   Ctrl+C / Ctrl+X           copy / cut selection (only while idle)
  *   Escape                    clear selection
+ *   mouse drag                select text (editable: delete / type over / copy)
+ *   click                     position cursor at that exact spot
  *   double-click              select word (paste markers are atomic)
  *   triple-click              select line
  *   Shift+click               extend selection to click position
+ *
+ * Mouse features require pi's fullscreen TUI mode (pi's default; regular mode
+ * leaves the mouse to the terminal emulator).
  *
  * Highlight uses the active theme's `selectedBg` token.
  *
@@ -76,6 +81,7 @@ interface EditorInternals {
 	pushUndoSnapshot(): void;
 	cancelAutocomplete(): void;
 	exitHistoryBrowsing(): void;
+	updateAutocomplete(): void;
 	buildVisualLineMap(width: number): VisualLine[];
 	layoutText(width: number): LayoutLine[];
 	segment(text: string, granularity: "grapheme" | "word"): Iterable<{ segment: string; index: number }>;
@@ -113,6 +119,7 @@ class SelectionEditor extends CustomEditor {
 	private readonly ctx: ExtensionContext;
 	private readonly isWorking: () => boolean;
 	private readonly broken: boolean;
+	private dragging = false;
 	private lastClick: { time: number; x: number; y: number; count: number } | null = null;
 
 	constructor(
@@ -388,6 +395,7 @@ class SelectionEditor extends CustomEditor {
 
 	setText(text: string): void {
 		this.anchor = null;
+		this.dragging = false;
 		super.setText(text);
 	}
 
@@ -400,40 +408,98 @@ class SelectionEditor extends CustomEditor {
 	// ── mouse ──────────────────────────────────────────────────────────────
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (this.broken || event.type !== "click" || event.button !== "left") {
-			return super.handleMouse(event);
-		}
-		const now = Date.now();
-		let count = event.clickCount ?? 0;
-		if (!count) {
-			const last = this.lastClick;
-			count =
-				last && now - last.time < 500 && Math.abs(last.x - event.x) <= 1 && Math.abs(last.y - event.y) <= 1
-					? last.count + 1
-					: 1;
-		}
-		this.lastClick = { time: now, x: event.x, y: event.y, count };
+		if (this.broken) return super.handleMouse(event);
+		const it = this.internals;
 
-		// Shift+click extends the selection to the clicked position.
-		if (event.shift) {
-			const pos = this.mouseToPos(event);
-			if (pos) {
-				if (!this.anchor) this.anchor = this.cursorPos();
-				this.setCursor(pos);
-				this.internals.lastAction = null;
-				this.tui.requestRender();
-				return { handled: true, focus: true };
+		// Left press inside the text area starts a drag selection. Handling press
+		// suppresses pi's screen-level (copy-only) selection for editor rows, and
+		// the renderer retargets all drag/release events back to us.
+		if (event.type === "press" && event.button === "left") {
+			if (event.y >= 1 && event.y <= it.renderedVisibleLineCount) {
+				const pos = this.mouseToPos(event);
+				if (pos) {
+					this.dragging = true;
+					this.anchor = pos;
+					this.setCursor(pos);
+					it.lastAction = null;
+					it.cancelAutocomplete();
+					this.tui.requestRender();
+					return { handled: true, focus: true };
+				}
 			}
+			if (event.y <= 0 || event.y === it.renderedVisibleLineCount + 1) {
+				return { handled: true, focus: true }; // borders: focus only
+			}
+			return super.handleMouse(event); // autocomplete area: default handling
 		}
 
-		const inText = event.y >= 1 && event.y <= this.internals.renderedVisibleLineCount;
-		const result = super.handleMouse(event);
-		if (inText) {
-			if (count >= 3) this.selectLineAtCursor();
-			else if (count === 2) this.selectWordAtCursor();
-			else this.clearSelection(false);
+		// Drag extends the selection; release ends it. Zero-length drag = click:
+		// cursor stays where pressed (renderer also synthesizes a click for
+		// double/triple-click gestures).
+		if (this.dragging && (event.type === "drag" || event.type === "release")) {
+			const pos = this.dragToPos(event, event.type === "drag");
+			if (pos) {
+				this.setCursor(pos);
+				it.lastAction = null;
+			}
+			if (event.type === "release") this.dragging = false;
+			this.tui.requestRender();
+			return { handled: true, focus: true };
 		}
-		return result;
+
+		if (event.type === "click" && event.button === "left") {
+			const now = Date.now();
+			let count = event.clickCount ?? 0;
+			if (!count) {
+				const last = this.lastClick;
+				count =
+					last && now - last.time < 500 && Math.abs(last.x - event.x) <= 1 && Math.abs(last.y - event.y) <= 1
+						? last.count + 1
+						: 1;
+			}
+			this.lastClick = { time: now, x: event.x, y: event.y, count };
+
+			// Shift+click extends the selection to the clicked position.
+			if (event.shift) {
+				const pos = this.mouseToPos(event);
+				if (pos) {
+					if (!this.anchor) this.anchor = this.cursorPos();
+					this.setCursor(pos);
+					it.lastAction = null;
+					this.tui.requestRender();
+					return { handled: true, focus: true };
+				}
+			}
+
+			const inText = event.y >= 1 && event.y <= it.renderedVisibleLineCount;
+			const result = super.handleMouse(event);
+			if (inText) {
+				if (count >= 3) this.selectLineAtCursor();
+				else if (count === 2) this.selectWordAtCursor();
+				else this.clearSelection(false);
+			}
+			return result;
+		}
+
+		return super.handleMouse(event);
+	}
+
+	/** Drag position with edge auto-scroll (one visual line per event past the edge). */
+	private dragToPos(event: TuiMouseEvent, scroll = true): Pos | null {
+		const it = this.internals;
+		if (!(it.lastWidth > 0)) return null;
+		const total = it.buildVisualLineMap(it.lastWidth).length;
+		const maxVisible = Math.max(5, Math.floor(this.tui.terminal.rows * 0.3));
+		const maxScroll = Math.max(0, total - maxVisible);
+		let row = event.y;
+		if (row < 1) {
+			if (scroll) it.scrollOffset = Math.max(0, it.scrollOffset - 1);
+			row = 1;
+		} else if (row > it.renderedVisibleLineCount) {
+			if (scroll) it.scrollOffset = Math.min(maxScroll, it.scrollOffset + 1);
+			row = Math.max(1, it.renderedVisibleLineCount);
+		}
+		return this.mouseToPos({ ...event, y: row });
 	}
 
 	/** Map a mouse event to a logical text position (mirrors base Editor click logic). */

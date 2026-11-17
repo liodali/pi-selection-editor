@@ -20,12 +20,19 @@ Pi's built-in editor has no keyboard selection. This extension installs a `Custo
 | Clear selection | `Esc`, or any plain cursor move |
 | Undo | `Ctrl+-` (pi default) — selection deletes are undoable |
 
-## Mouse
+## Mouse (requires fullscreen TUI mode)
 
+- **Click** — move the cursor to that exact position in the text
+- **Drag** — select text: delete it, type over it, or `Ctrl+C` to copy it
 - **Double-click** — select word (collapsed paste markers are selected whole)
 - **Triple-click** — select line
 - **Shift+click** — extend selection to the clicked position
-- Plain click clears the selection; drag-select still copies via pi's screen selection
+- Dragging past the top/bottom edge auto-scrolls
+
+Mouse input requires pi's **fullscreen** TUI mode (pi's default). In `regular` mode the
+terminal emulator owns the mouse, so pi never sees clicks or drags. Switch via
+`/settings` → TUI mode, or set `"tuiMode": "fullscreen"` in `~/.pi/agent/settings.json`.
+Transcript drag-to-copy still works outside the input box.
 
 ## Install
 
