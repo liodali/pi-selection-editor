@@ -21,7 +21,10 @@
  *   Shift+click               extend selection to click position
  *
  * Mouse features require pi's fullscreen TUI mode (pi's default; regular mode
- * leaves the mouse to the terminal emulator).
+ * leaves the mouse to the terminal emulator). Opt-in regular-mode support:
+ * `/selection-editor mouse` enables mouse reporting and parses SGR sequences
+ * in the editor itself (click/drag work; wheel no longer scrolls scrollback,
+ * shift+drag copies transcript text via the terminal).
  *
  * Highlight uses the active theme's `selectedBg` token.
  *
@@ -30,6 +33,9 @@
  * version changes them, the extension falls back to default editing.
  * Verified against pi 1.5.2.
  */
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	CustomEditor,
 	copyToClipboard,
@@ -120,6 +126,10 @@ class SelectionEditor extends CustomEditor {
 	private readonly isWorking: () => boolean;
 	private readonly broken: boolean;
 	private dragging = false;
+	private regularMouse = false;
+	private mousePressPoint: { x: number; y: number } | null = null;
+	private mousePressMoved = false;
+	private lastSynthClick: { time: number; x: number; y: number; count: number } | null = null;
 	private lastClick: { time: number; x: number; y: number; count: number } | null = null;
 
 	constructor(
@@ -264,6 +274,18 @@ class SelectionEditor extends CustomEditor {
 			super.handleInput(data);
 			return;
 		}
+
+		// Regular-mode mouse: with reporting enabled, raw SGR sequences reach the
+		// focused editor here (fullscreen consumes them in its own input listener).
+		if (data.includes("\x1b[<") || (data.length === 6 && data.startsWith("\x1b[M"))) {
+			if (this.regularMouse) {
+				for (const m of data.matchAll(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g)) {
+					this.handleRegularMouse(Number(m[1]), Number(m[2]) - 1, Number(m[3]) - 1, m[4] === "m");
+				}
+			}
+			return;
+		}
+
 		const it = this.internals;
 		const kb = getKeybindings();
 
@@ -389,6 +411,93 @@ class SelectionEditor extends CustomEditor {
 		// Submit and everything else: drop selection, defer to app + base editor.
 		this.clearSelection(false);
 		super.handleInput(data);
+	}
+
+	// ── regular-mode mouse (opt-in) ───────────────────────────────────────
+
+	enableRegularMouse(): void {
+		if (this.regularMouse) return;
+		this.regularMouse = true;
+		// Button press/release + drag motion, SGR encoding. No ?1003h (all-motion).
+		this.tui.terminal.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+	}
+
+	disableRegularMouse(): void {
+		if (!this.regularMouse) return;
+		this.regularMouse = false;
+		this.dragging = false;
+		this.mousePressPoint = null;
+		this.tui.terminal.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l");
+	}
+
+	/** Parse one SGR mouse report (0-based screen coords) and route it through handleMouse. */
+	private handleRegularMouse(button: number, sx: number, sy: number, release: boolean): void {
+		if ((button & 64) !== 0) return; // wheel: consumed; scrollback scrolling only works while reporting is off
+		if ((button & 3) !== 0) return; // left button only
+		const type = release ? "release" : (button & 32) !== 0 ? "drag" : "press";
+		const local = this.screenToEditor(sx, sy);
+		if (!local) return; // outside the input box (transcript, borders, other components)
+		const event: TuiMouseEvent = {
+			type,
+			button: "left",
+			x: local.x,
+			y: local.y,
+			screenX: sx,
+			screenY: sy,
+			width: this.tui.terminal.columns,
+			height: local.height,
+			shift: (button & 4) !== 0,
+			alt: (button & 8) !== 0,
+			ctrl: (button & 16) !== 0,
+		};
+		if (type === "press") {
+			this.mousePressPoint = { x: sx, y: sy };
+			this.mousePressMoved = false;
+		} else if (this.mousePressPoint && (sx !== this.mousePressPoint.x || sy !== this.mousePressPoint.y)) {
+			this.mousePressMoved = true;
+		}
+		this.handleMouse(event);
+		if (type === "release") {
+			const point = this.mousePressPoint;
+			this.mousePressPoint = null;
+			// Stationary press+release = click; synthesize it (no renderer does in regular mode).
+			if (point && !this.mousePressMoved && point.x === sx && point.y === sy) {
+				const now = Date.now();
+				const prev = this.lastSynthClick;
+				const count = prev && now - prev.time <= 500 && prev.x === sx && prev.y === sy ? (prev.count % 3) + 1 : 1;
+				this.lastSynthClick = { time: now, x: sx, y: sy, count };
+				this.handleMouse({ ...event, type: "click", clickCount: count });
+			}
+		}
+	}
+
+	/** Map 0-based screen coords to editor-local coords using the TUI's render layout. */
+	private screenToEditor(sx: number, sy: number): { x: number; y: number; height: number } | null {
+		const tui = this.tui as unknown as {
+			mouseLayout?: { width: number; children: { component: unknown; height: number }[] };
+			terminal: { rows: number; columns: number };
+		};
+		const layout = tui.mouseLayout;
+		if (!layout || layout.width !== tui.terminal.columns) return null;
+		let total = 0;
+		let offset = 0;
+		let editorHeight = 0;
+		let found = false;
+		for (const child of layout.children) {
+			if (child.component === this) {
+				found = true;
+				editorHeight = child.height;
+				offset = total;
+			}
+			total += child.height;
+		}
+		if (!found || editorHeight === 0) return null;
+		// Main-screen live region is bottom-anchored: row 0 of the render sits at
+		// terminal.rows - totalHeight on screen.
+		const top = tui.terminal.rows - total + offset;
+		const y = sy - top;
+		if (y < 0 || y >= editorHeight) return null;
+		return { x: sx, y, height: editorHeight };
 	}
 
 	// ── programmatic text changes ──────────────────────────────────────────
@@ -689,6 +798,26 @@ class SelectionEditor extends CustomEditor {
 
 export default function (pi: ExtensionAPI) {
 	let working = false;
+	let activeTui: TUI | undefined;
+	let activeEditor: SelectionEditor | undefined;
+
+	// Persisted opt-in for regular-mode mouse (config.json next to this file).
+	const configPath = join(dirname(fileURLToPath(import.meta.url)), "config.json");
+	const readConfig = (): { regularModeMouse?: boolean } => {
+		try {
+			return JSON.parse(readFileSync(configPath, "utf8")) as { regularModeMouse?: boolean };
+		} catch {
+			return {};
+		}
+	};
+	const writeConfig = (cfg: { regularModeMouse?: boolean }): void => {
+		try {
+			writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n");
+		} catch {
+			// non-fatal: toggle still applies for this session
+		}
+	};
+
 	pi.on("agent_start", () => {
 		working = true;
 	});
@@ -696,21 +825,59 @@ export default function (pi: ExtensionAPI) {
 		working = false;
 	});
 
-	const factory = (ctx: ExtensionContext) => (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) =>
-		new SelectionEditor(tui, theme, keybindings, ctx, () => working);
+	const factory = (ctx: ExtensionContext) => (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => {
+		const ed = new SelectionEditor(tui, theme, keybindings, ctx, () => working);
+		activeTui = tui;
+		activeEditor = ed;
+		if ((tui as unknown as { mode?: string }).mode === "regular" && readConfig().regularModeMouse) {
+			ed.enableRegularMouse();
+		}
+		return ed;
+	};
 
 	pi.on("session_start", (_event, ctx) => {
 		ctx.ui.setEditorComponent(factory(ctx));
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
+		activeEditor?.disableRegularMouse();
+		activeEditor = undefined;
+		activeTui = undefined;
 		ctx.ui.setEditorComponent(undefined);
 	});
 
 	pi.registerCommand("selection-editor", {
-		description: "Toggle the selection editor (shift+arrow text selection)",
-		handler: async (_args, ctx) => {
+		description: "Toggle selection editor; '/selection-editor mouse' toggles regular-mode mouse support",
+		handler: async (args, ctx) => {
+			if (args.trim().toLowerCase() === "mouse") {
+				const cfg = readConfig();
+				const enable = !cfg.regularModeMouse;
+				cfg.regularModeMouse = enable;
+				writeConfig(cfg);
+				const mode = (activeTui as unknown as { mode?: string } | undefined)?.mode;
+				if (mode === "regular" && activeEditor) {
+					if (enable) {
+						activeEditor.enableRegularMouse();
+						ctx.ui.notify(
+							"Regular-mode mouse ON: click/drag in the input works. Wheel no longer scrolls scrollback; shift+drag copies transcript text.",
+							"warning",
+						);
+					} else {
+						activeEditor.disableRegularMouse();
+						ctx.ui.notify("Regular-mode mouse OFF: the terminal owns the mouse again", "info");
+					}
+				} else {
+					ctx.ui.notify(
+						enable
+							? "Saved: regular-mode mouse enabled (applies in regular TUI mode; fullscreen already has mouse support)"
+							: "Saved: regular-mode mouse disabled",
+						"info",
+					);
+				}
+				return;
+			}
 			if (ctx.ui.getEditorComponent()) {
+				activeEditor?.disableRegularMouse();
 				ctx.ui.setEditorComponent(undefined);
 				ctx.ui.notify("Selection editor disabled", "info");
 			} else {

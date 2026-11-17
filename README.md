@@ -20,7 +20,7 @@ Pi's built-in editor has no keyboard selection. This extension installs a `Custo
 | Clear selection | `Esc`, or any plain cursor move |
 | Undo | `Ctrl+-` (pi default) — selection deletes are undoable |
 
-## Mouse (requires fullscreen TUI mode)
+## Mouse
 
 - **Click** — move the cursor to that exact position in the text
 - **Drag** — select text: delete it, type over it, or `Ctrl+C` to copy it
@@ -29,10 +29,19 @@ Pi's built-in editor has no keyboard selection. This extension installs a `Custo
 - **Shift+click** — extend selection to the clicked position
 - Dragging past the top/bottom edge auto-scrolls
 
-Mouse input requires pi's **fullscreen** TUI mode (pi's default). In `regular` mode the
-terminal emulator owns the mouse, so pi never sees clicks or drags. Switch via
-`/settings` → TUI mode, or set `"tuiMode": "fullscreen"` in `~/.pi/agent/settings.json`.
-Transcript drag-to-copy still works outside the input box.
+**Fullscreen TUI mode** (pi's default): works out of the box; transcript drag-to-copy
+still works outside the input box.
+
+**Regular TUI mode**: the terminal owns the mouse by default, so pi never sees clicks
+or drags. Enable opt-in support with:
+
+```
+/selection-editor mouse
+```
+
+The choice persists (`config.json` next to the extension). Trade-offs while it's on:
+the wheel no longer scrolls terminal scrollback, and copying transcript text needs
+shift+drag (terminal-dependent). Toggle again to give the mouse back to the terminal.
 
 ## Install
 
@@ -50,7 +59,7 @@ Register the folder in `~/.pi/agent/settings.json`:
 
 Or clone/symlink it into `~/.pi/agent/extensions/` for auto-discovery. Run `/reload` in pi (or restart) to apply.
 
-Toggle at runtime: `/selection-editor`.
+Toggle at runtime: `/selection-editor` (and `/selection-editor mouse` for regular-mode mouse).
 
 ## Tests
 
