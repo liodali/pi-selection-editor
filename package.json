@@ -1,0 +1,10 @@
+{
+	"name": "pi-selection-editor",
+	"version": "0.1.0",
+	"description": "Text selection for Pi's input editor: shift+arrows, copy/cut, type-to-replace, double/triple-click and shift+click mouse selection.",
+	"type": "module",
+	"private": true,
+	"pi": {
+		"extensions": ["./index.ts"]
+	}
+}
